@@ -1,0 +1,50 @@
+[Unit]
+Description=HH voiceprint: local speaker embeddings for the live voice (Unix socket only)
+Documentation=file:/opt/hhos-voiceprint/server.py
+After=network.target
+
+# Installed and started by deploy/install-voiceprint.sh (run by
+# deploy/deploy-dashboard.sh). The dashboard (hhosadmin, a member of the
+# hhosvoiceprint group) reaches it on /run/hhos-voiceprint/voiceprint.sock; it
+# keeps no audio, no embedding and no voiceprint, and logs no request.
+# Whether the relay uses it at all is the panel's Settings > Voice > Voiceprint
+# switch: off, the relay never calls it.
+
+[Service]
+Type=simple
+User=hhosvoiceprint
+Group=hhosvoiceprint
+RuntimeDirectory=hhos-voiceprint
+RuntimeDirectoryMode=0750
+Environment=HHOS_VOICEPRINT_SOCKET=/run/hhos-voiceprint/voiceprint.sock
+Environment=HHOS_VOICEPRINT_MODEL=/var/lib/hhos-voiceprint/models/voxceleb_resnet34_LM.onnx
+Environment=HHOS_VOICEPRINT_THREADS=4
+Environment=OMP_NUM_THREADS=4
+ExecStart=/opt/hhos-voiceprint/venv/bin/python /opt/hhos-voiceprint/server.py
+# A turn's check is ~20-60 ms of CPU; keep it ahead of batch work, behind nothing interactive.
+Nice=0
+CPUWeight=100
+MemoryMax=700M
+Restart=on-failure
+RestartSec=3
+
+WorkingDirectory=/tmp
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/hhos-voiceprint /var/lib/hhos-voiceprint
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

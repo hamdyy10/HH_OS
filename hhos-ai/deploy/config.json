@@ -1,0 +1,14 @@
+{
+  "name": "HH AI",
+  "cli": "/opt/hhos-ai/cli/claude",
+  "cli_version": "2.1.283",
+  "model": "claude-opus-5-5",
+  "effort": "high",
+  "permission_mode": "auto",
+  "cwd": "/root/hhos-ai",
+  "runtime_dir": "/run/user/0",
+  "socket_group": "hhosai",
+  "remote_control": true,
+  "approval_timeout_s": 300,
+  "delegation_allow": []
+}

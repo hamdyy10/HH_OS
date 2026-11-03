@@ -1,0 +1,160 @@
+#!/usr/bin/env node
+"use strict";
+/**
+ * The rename: the web OS is "HH OS" and its assistant "HH AI" (they were
+ * HH OS and HH AI until 2026-09-29).
+ *
+ *   NODE_PATH=/opt/hhos-dashboard/node_modules node dashboard/tools/test-hh-rename.cjs
+ *
+ * Checks what the administrator sees and hears -- the top bar, the page
+ * titles, the Command Center, the login page, the guide, the voice prompts and
+ * the desk's instructions -- and that everything matching the assistant by
+ * NAME accepts both the new and the old name during the transition: the voice
+ * desk's guard, the desk's model view, and the Command Center's own helper
+ * (cut out of public/hhos-ai.js and run here, so this tests the shipped code).
+ */
+
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const vm = require("vm");
+
+process.env.HHOS_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hh-test-"));
+const ROOT = path.join(__dirname, "..");
+const lib = (m) => require(path.join(ROOT, "lib", m));
+
+let passed = 0;
+let failed = 0;
+function check(name, cond, detail) {
+  if (cond) {
+    passed++;
+    console.log("  ok   " + name);
+  } else {
+    failed++;
+    console.log("  FAIL " + name + (detail !== undefined ? "\n       " + String(detail).slice(0, 400) : ""));
+  }
+}
+
+// "HH" as a word a person sees. Internal ids stay (hhos-ai, hhos-agent@,
+// /opt/hhos-agents, HHOS_*), so only the upper-case / title-case name counts.
+const OLD_NAME = /\bMONI\b(?![_-])|\bMoni\b(?![A-Z_-])/;
+const visible = (html) =>
+  String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]+>/g, " ");
+const titleOf = (html) => ((/<title>([^<]*)<\/title>/.exec(html) || [])[1] || "");
+
+const ui = lib("ui");
+const rbac = lib("rbac");
+const views = lib("views");
+const admin = rbac.actor({ permissions: ["*"] });
+const user = { name: "Ann", roleLabel: "Administrator", perm: admin, dash: "os" };
+
+console.log("the frame");
+{
+  const page = ui.shell("Overview", "<p>x</p>", { user, csrf: "c", active: "services" });
+  check("the page title ends in HH OS", / — HH OS$/.test(titleOf(page)), titleOf(page));
+  check("the top-bar brand is the word HH as text, no leaf, no [OS] tag", /<span class="wordmark brand-text"><span class="wm-hh">HH<\/span><\/span>/.test(page) && !/pill-brand|lk-mk/.test(page));
+  check("the brand link is labelled HH OS", /<a class="brand" href="[^"]*" aria-label="HH OS">/.test(page));
+  check("the assistant's sidebar group reads HH AI", /data-side-group="hh-ai">HH AI</.test(page) && /href="\/hh-ai"/.test(page));
+  check("no old name anywhere a person reads", !OLD_NAME.test(visible(page)) && !/MONI AI/.test(page), (visible(page).match(/.{0,40}\bHHOS\b.{0,40}/) || [])[0]);
+  const nav = ui.NAV.find((n) => n.key === "hh-ai");
+  check("the NAV group is labelled HH AI and holds the Command Center", nav && nav.label === "HH AI" && nav.items[0].href === "/hh-ai" && nav.items[0].label === "Command Center");
+  check("no NAV label carries the old name", ui.NAV.every((g) => !OLD_NAME.test(g.label) && g.items.every((i) => !OLD_NAME.test(i.label))));
+}
+
+console.log("login, setup, pair");
+{
+  const login = views.login({ csrf: "c" });
+  check("the login page title says HH OS", /HH OS/.test(titleOf(login)), titleOf(login));
+  check("the login card carries the HH wordmark and says Sign in", /class="card auth-card"><div class="auth-lockup"><span class="wordmark full"><span class="wm-hh">HH<\/span>/.test(login) && /<h2[^>]*>Sign in<\/h2>/.test(login));
+  check("no old name on the login page", !OLD_NAME.test(visible(login)));
+  for (const [name, html] of [["setup", views.setup({ csrf: "c", token: "t" })], ["pair", views.pair({ csrf: "c" })]]) {
+    check(`the ${name} page says HH OS, not HH`, /HH OS/.test(titleOf(html)) && !OLD_NAME.test(visible(html)), titleOf(html));
+  }
+}
+
+console.log("the Command Center");
+{
+  const cc = lib("views-hhosai").page({
+    csrf: "c",
+    user: { name: "Ann", roleLabel: "Administrator", perm: admin, dash: "console" },
+    voice: { configured: true, voice: "marin", model: "gpt-realtime-2.1-mini", manage: true, on: true, use: true, live: true },
+  });
+  check("its title is HH AI (the AI brand names itself once)", titleOf(cc) === "HH AI", titleOf(cc));
+  check("the Machine sheet's core grid is headed HH AI core", /class="cc-sec-t">HH AI core</.test(cc));
+  check("the conversation sheet is HH AI's session", /id="cc-dr-sub">the HH AI session</.test(cc));
+  check("the composer says Ask HH AI", /placeholder="Ask HH AI"/.test(cc));
+  check("the voice bar says TALK TO HH AI", /TALK TO HH AI/.test(cc) && /aria-label="Message HH AI"/.test(cc));
+  check("no old name in the Command Center", !OLD_NAME.test(visible(cc)) && !/MONI/.test(cc.replace(/hhos-ai|HhosMap|HhosPanels/g, "")), (cc.match(/.{0,40}HH.{0,40}/) || [])[0]);
+
+  const pub = (f) => fs.readFileSync(path.join(ROOT, "public", f), "utf8");
+  for (const f of ["hhos-ai.js", "cc-panels.js", "cc-map.js", "console.js", "mycelium.js"]) {
+    const src = pub(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // Only the name matchers may still spell the old name (lower case, in a regex / string compare).
+    check(`public/${f} shows no HH to a person`, !/MONI(?!_)/.test(src) && !/\bHhos\b(?![A-Z])/.test(src), (src.match(/.{0,50}HH(?!_).{0,50}/) || [])[0]);
+  }
+  check("the core in the centre is labelled HH AI", /<main class="cc-main" id="cc-center" aria-label="HH AI">/.test(cc));
+  check("the favicon is labelled HH OS", /aria-label="HH OS"/.test(pub("favicon.svg")));
+}
+
+console.log("guide and settings");
+{
+  const guide = lib("views-guide").guide({ csrf: "c", user, publicHost: "h", publicPort: 1, sshHost: "h" });
+  check("the guide shows no old name", !OLD_NAME.test(visible(guide)), (visible(guide).match(/.{0,40}\bHHOS\b.{0,40}/) || [])[0]);
+  const voiceLib = lib("voice");
+  const voicePage = lib("views-settings-voice").body({
+    csrf: "c", on: true, status: { configured: true }, model: "gpt-realtime-2.1-mini", models: voiceLib.VOICE_MODELS, voice: "marin", voices: voiceLib.VOICES, meta: voiceLib.VOICE_META,
+    transcribe: "gpt-4o-mini-transcribe", persona: { mode: "learned", choice: "Learn from how I speak" }, liveAudio: {}, usage: null, test: null,
+  });
+  check("Settings › Voice speaks of HH AI", /HH AI/.test(voicePage) && !OLD_NAME.test(visible(voicePage)), (visible(voicePage).match(/.{0,40}\bHHOS\b.{0,40}/) || [])[0]);
+  const perms = rbac.GROUPS || rbac.PERMISSION_GROUPS || null;
+  const rbacSrc = fs.readFileSync(path.join(ROOT, "lib", "rbac.js"), "utf8");
+  check("the permission labels say HH AI", /label: "HH AI"/.test(rbacSrc) && /Command HH AI/.test(rbacSrc) && !/MONI AI/.test(rbacSrc), perms && "");
+}
+
+console.log("voice");
+{
+  const voice = lib("voice");
+  const desk = lib("voice-shared"); // the fixed lines and the guard (was voice-desk)
+  const live = lib("voice-live");
+  check("the transcription vocabulary names HH and HH AI", /HH/.test(voice.TRANSCRIBE_PROMPT) && /HH AI/.test(voice.TRANSCRIBE_PROMPT), voice.TRANSCRIBE_PROMPT);
+  check("the transcription vocabulary no longer says HH", !/MONI/.test(voice.TRANSCRIBE_PROMPT), voice.TRANSCRIBE_PROMPT);
+  const instr = [live.INSTRUCTIONS, desk.SUMMARY_INSTRUCTIONS, JSON.stringify(live.TOOLS)].join("\n");
+  check("the live voice's instructions name HH AI (the voice IS HH AI, 2026-09-29)", /HH AI/.test(live.INSTRUCTIONS) && /first person/.test(live.INSTRUCTIONS), live.INSTRUCTIONS.slice(0, 200));
+  check("no HH in the voice's instructions or tool descriptions", !/MONI/.test(instr), (instr.match(/.{0,40}HH.{0,40}/) || [])[0]);
+  const lines = [desk.SAFE_LINE, desk.SAFE_LINE_ASKED, desk.SAFE_LINE_TAIL, desk.APPROVAL_LINE, desk.APPROVAL_LINE_SHORT, desk.DETAILS_LINE, desk.SUMMARY_CUT_LINE, desk.SUMMARY_NONE_LINE];
+  check("every fixed spoken line is free of HH", lines.every((l) => !/MONI/i.test(String(l || ""))), lines.join(" | "));
+  check("no fixed line names the assistant at all: they are in its own voice, first person", lines.every((l) => !/MONI/i.test(String(l || ""))) && /^Give me a moment, I'm/.test(desk.SAFE_LINE));
+
+  // The guard catches the same claims about either name.
+  const ctx = { grounded: true, snapshotText: "{}" };
+  for (const n of ["HH AI", "HH AI", "HH"]) {
+    const g = desk.guard(`${n} said the backups are fine.`, ctx);
+    check(`"${n} said…" is cut (third-person: the voice is HH AI)`, !g.ok && g.rule === "third-person", JSON.stringify(g));
+    const h = desk.guard(`I've passed that to ${n}.`, { ...ctx, askedNow: true });
+    check(`"passed that to ${n}" is cut even with a call behind it`, !h.ok && h.rule === "third-person", JSON.stringify(h));
+  }
+  const view = desk.forModel({ hhos_ai: { state: "Ready" }, requests_to_hhos_ai: [{ id: 3, answered: true, reply: "x" }] });
+  check("the desk's model view: its own state and requests, never hhos_ai", view.your_own_state && view.your_own_state.state === "Ready" && !("hhos_ai" in view) && Array.isArray(view.your_requests_in_progress), JSON.stringify(view));
+}
+
+console.log("the Command Center's name helper (public/hhos-ai.js)");
+{
+  const src = fs.readFileSync(path.join(ROOT, "public", "hhos-ai.js"), "utf8");
+  const a = src.indexOf("  var AI_NAME = ");
+  const b = src.indexOf("  function liveSessions()");
+  check("the helper is there", a > 0 && b > a);
+  const sb = { S: { sessions: [] } };
+  vm.runInNewContext(src.slice(a, src.indexOf("\n", b) + 1) + "\nthis.isAiName = isAiName; this.aiLabel = aiLabel; this.liveSessions = liveSessions; this.AI_NAME = AI_NAME;", sb);
+  check("the display name is HH AI", sb.AI_NAME === "HH AI");
+  for (const n of ["HH AI", "HH AI", "hh ai", "HH AI", "hhos-ai", "HH AI [a1b2c3]", "HH Bot"]) check(`"${n}" is the assistant`, sb.isAiName(n) === true);
+  for (const n of ["HH Agent OS", "Odoo 19 VPS setup", "hh", "", null]) check(`"${n}" is not the assistant`, sb.isAiName(n) === false);
+  check("actors are shown by the new name", sb.aiLabel("hhos-ai") === "HH AI" && sb.aiLabel("HH AI") === "HH AI" && sb.aiLabel("amaraghy") === "amaraghy");
+  sb.S.sessions = [{ name: "HH AI", self: true }, { name: "HH AI" }, { name: "HH AI" }, { name: "HH Agent OS" }];
+  const live = sb.liveSessions().map((s) => s.name);
+  check("a session carrying either name is never a delegation target", JSON.stringify(live) === '["HH Agent OS"]', JSON.stringify(live));
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);
